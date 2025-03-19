@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQLite Database Viewer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding-top: 20px; }
+        pre { background-color: #f8f9fa; padding: 10px; border-radius: 5px; }
+        .table-container { overflow-x: auto; max-height: 500px; overflow-y: auto; }
+        #status-bar { position: fixed; bottom: 0; width: 100%; background-color: #f8f9fa; padding: 5px 15px; border-top: 1px solid #ddd; font-size: 0.9em; }
+        .sql-editor { width: 100%; height: 150px; font-family: monospace; margin-bottom: 10px; }
+        .table-list { max-height: 300px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SQLite Database Viewer</h1>
+        <div class="row mt-4">
+            <div class="col-md-3">
+                <div class="card">
+                    <div class="card-header">Tables</div>
+                    <div class="card-body" id="tableList">
+                        <p>Loading...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-9">
+                <div class="card mb-4">
+                    <div class="card-header">SQL Query</div>
+                    <div class="card-body">
+                        <textarea id="sqlQuery" class="sql-editor form-control">SELECT * FROM sqlite_master WHERE type='table';</textarea>
+                        <button id="runQuery" class="btn btn-primary">Run Query</button>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <span id="resultTitle">Results</span>
+                        <span class="badge bg-secondary float-end" id="rowCount"></span>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-container" id="resultContainer">
+                            <p>Run a query to see results</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="status-bar">
+        <span id="dbStatus">Database: Checking status...</span>
+    </div>
+    
+    <script>
+        let currentTable = null;
+        let lastModifiedTime = 0;
+
+        function loadSchema() {
+            fetch('/schema')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('tableList').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                        return;
+                    }
+                    const tableList = document.getElementById('tableList');
+                    tableList.innerHTML = '';
+                    const tables = Object.keys(data).sort();
+                    tables.forEach(table => {
+                        const tableItem = document.createElement('div');
+                        tableItem.className = 'mb-2';
+                        const tableLink = document.createElement('a');
+                        tableLink.href = '#';
+                        tableLink.textContent = table;
+                        tableLink.onclick = () => loadTable(table);
+                        
+                        tableItem.appendChild(tableLink);
+                        tableList.appendChild(tableItem);
+                    });
+                })
+                .catch(error => {
+                    document.getElementById('tableList').innerHTML = `<div class="alert alert-danger">${error}</div>`;
+                });
+        }
+        
+        function loadTable(table) {
+            currentTable = table;
+            document.getElementById('sqlQuery').value = `SELECT * FROM ${table} LIMIT 1000;`;
+            document.getElementById('resultTitle').textContent = `Table: ${table}`;
+            runQuery();
+        }
+        
+        function runQuery() {
+            const query = document.getElementById('sqlQuery').value;
+            fetch('/query', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ query })
+            })
+            .then(response => response.json())
+            .then(data => {
+                const resultContainer = document.getElementById('resultContainer');
+                const rowCount = document.getElementById('rowCount');
+                if (data.error) {
+                    resultContainer.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                    rowCount.textContent = '';
+                    return;
+                }
+                if (data.results) {
+                    rowCount.textContent = `${data.rowCount} rows`;
+                    if (data.results.length === 0) {
+                        resultContainer.innerHTML = '<p>No results found</p>';
+                        return;
+                    }
+                    const table = document.createElement('table');
+                    table.className = 'table table-striped table-hover';
+                    const thead = document.createElement('thead');
+                    const headerRow = document.createElement('tr');
+                    Object.keys(data.results[0]).forEach(column => {
+                        const th = document.createElement('th');
+                        th.textContent = column;
+                        headerRow.appendChild(th);
+                    });
+                    thead.appendChild(headerRow);
+                    table.appendChild(thead);
+                    const tbody = document.createElement('tbody');
+                    data.results.forEach(row => {
+                        const tr = document.createElement('tr');
+                        Object.values(row).forEach(value => {
+                            const td = document.createElement('td');
+                            if (value === null) {
+                                td.innerHTML = '<em class="text-muted">NULL</em>';
+                            } else {
+                                td.textContent = value;
+                            }
+                            tr.appendChild(td);
+                        });
+                        tbody.appendChild(tr);
+                    });
+                    table.appendChild(tbody);
+                    resultContainer.innerHTML = '';
+                    resultContainer.appendChild(table);
+                } else {
+                    resultContainer.innerHTML = `<div class="alert alert-success">${data.message} (${data.rowCount} rows affected)</div>`;
+                    rowCount.textContent = '';
+                    loadSchema();
+                }
+            })
+            .catch(error => {
+                document.getElementById('resultContainer').innerHTML = `<div class="alert alert-danger">${error}</div>`;
+            });
+        }
+        
+        function checkDatabaseStatus() {
+            fetch('/db_status')
+                .then(response => response.json())
+                .then(data => {
+                    const dbStatus = document.getElementById('dbStatus');
+                    if (!data.exists) {
+                        dbStatus.textContent = 'Database: Not found';
+                        return;
+                    }
+                    const modifiedTime = new Date(data.modified * 1000).toLocaleString();
+                    dbStatus.textContent = `Database: ${data.size} bytes, last modified ${modifiedTime}`;
+                    if (data.changed) {
+                        loadSchema();
+                        if (currentTable) {
+                            loadTable(currentTable);
+                        }
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('dbStatus').textContent = `Error: ${error}`;
+                });
+        }
+        loadSchema();
+        setInterval(checkDatabaseStatus, 5000);
+        document.getElementById('runQuery').addEventListener('click', runQuery);
+    </script>
+</body>
+</html>
